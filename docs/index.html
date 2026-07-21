@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>VRM Viewer</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%A7%8D%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="./style.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./vendor/three/three.module.js",
+      "three/addons/": "./vendor/three/addons/",
+      "@pixiv/three-vrm": "./vendor/three/three-vrm.module.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <canvas id="viewer"></canvas>
+
+  <!-- ドロップ / ファイル選択のオーバーレイ -->
+  <div id="dropzone" class="dropzone">
+    <div class="dropzone-inner">
+      <div class="dropzone-icon">📦</div>
+      <p class="dropzone-title">VRMファイルをここにドロップ</p>
+      <p class="dropzone-sub">または</p>
+      <button id="pickFileBtn" class="btn">ファイルを選択</button>
+      <input id="fileInput" type="file" accept=".vrm,.glb" hidden />
+    </div>
+  </div>
+
+  <!-- ローディング -->
+  <div id="loading" class="loading hidden">
+    <div class="spinner"></div>
+    <p id="loadingText">読み込み中...</p>
+  </div>
+
+  <!-- ツールバー -->
+  <div id="toolbar" class="toolbar hidden">
+    <button id="loadAnotherBtn" class="btn btn-small">別のファイル</button>
+    <button id="resetViewBtn" class="btn btn-small">視点リセット</button>
+    <button id="toggleInfoBtn" class="btn btn-small">情報</button>
+  </div>
+
+  <!-- 情報パネル -->
+  <div id="infoPanel" class="info-panel hidden">
+    <div class="info-header">
+      <span>モデル情報</span>
+      <button id="closeInfoBtn" class="info-close" aria-label="閉じる">×</button>
+    </div>
+    <div id="infoBody" class="info-body"></div>
+  </div>
+
+  <div id="errorToast" class="error-toast hidden"></div>
+
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
