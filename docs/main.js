@@ -33,6 +33,10 @@ const playPauseBtn = document.getElementById("playPauseBtn");
 const stopAnimBtn = document.getElementById("stopAnimBtn");
 const addVrmaBtn = document.getElementById("addVrmaBtn");
 const vrmaInput = document.getElementById("vrmaInput");
+const toggleExprBtn = document.getElementById("toggleExprBtn");
+const exprPanel = document.getElementById("exprPanel");
+const closeExprBtn = document.getElementById("closeExprBtn");
+const exprList = document.getElementById("exprList");
 
 // ---------------------------------------------------------------------------
 // three.js セットアップ
@@ -78,6 +82,19 @@ let currentAnimIndex = -1; // animations 配列内で選択中のインデック
 // 読み込み済み VRMA。{ name, source: "builtin"|"user", vrmAnimation }
 const animations = [];
 
+// 手動で選択中の表情プリセット名（null = なし）
+let manualExpression = null;
+// VRM 既定の感情プリセット（手動切り替えの対象）
+const EXPRESSION_PRESETS = [
+  { name: "happy", label: "喜び" },
+  { name: "angry", label: "怒り" },
+  { name: "sad", label: "悲しみ" },
+  { name: "relaxed", label: "リラックス" },
+  { name: "surprised", label: "驚き" },
+];
+// 現在のモデルが持つプリセットのみ（buildExpressionList で更新）
+let availableExpressions = [];
+
 // ---------------------------------------------------------------------------
 // リサイズ対応
 // ---------------------------------------------------------------------------
@@ -100,7 +117,11 @@ function animate() {
   const delta = clock.getDelta();
   controls.update();
   if (mixer) mixer.update(delta);
-  if (currentVrm) currentVrm.update(delta);
+  if (currentVrm) {
+    // 手動表情はアニメーションより後・描画反映(update)より前に適用して優先させる
+    applyManualExpression();
+    currentVrm.update(delta);
+  }
   renderer.render(scene, camera);
 }
 animate();
@@ -167,6 +188,7 @@ async function loadVrmFromArrayBuffer(buffer, fileSize) {
     showInfo(collectModelInfo(vrm, gltf, fileSize));
     renderAnimList();
     updateAnimControls();
+    buildExpressionList();
 
     dropzone.classList.add("hidden");
     toolbar.classList.remove("hidden");
@@ -528,6 +550,60 @@ function updateAnimControls() {
 }
 
 // ---------------------------------------------------------------------------
+// 表情（手動プリセット切り替え）
+// ---------------------------------------------------------------------------
+// 現在のモデルが持つプリセットを調べてチップを描画する
+function buildExpressionList() {
+  manualExpression = null;
+  availableExpressions = [];
+  const em = currentVrm && currentVrm.expressionManager;
+  if (em) {
+    availableExpressions = EXPRESSION_PRESETS.filter((p) =>
+      em.getExpression(p.name)
+    );
+  }
+  renderExprChips();
+}
+
+function renderExprChips() {
+  if (availableExpressions.length === 0) {
+    exprList.innerHTML =
+      '<div class="expr-empty">このモデルには表情プリセットがありません。</div>';
+    return;
+  }
+  const chips = [{ name: "", label: "なし" }, ...availableExpressions];
+  exprList.innerHTML = chips
+    .map((c) => {
+      const active = (manualExpression || "") === c.name ? " active" : "";
+      return `<button class="expr-chip${active}" data-expr="${c.name}">${escapeHtml(
+        c.label
+      )}</button>`;
+    })
+    .join("");
+}
+
+// 表情を選択する（name が空文字/null なら解除してニュートラルへ）
+function setExpression(name) {
+  manualExpression = name || null;
+  const em = currentVrm && currentVrm.expressionManager;
+  if (em && !manualExpression) {
+    // 解除時は感情プリセットの重みをクリア
+    for (const p of availableExpressions) em.setValue(p.name, 0);
+  }
+  renderExprChips();
+}
+
+// 毎フレーム、選択中の表情を再適用してアニメーションより優先させる
+function applyManualExpression() {
+  if (!manualExpression) return;
+  const em = currentVrm && currentVrm.expressionManager;
+  if (!em) return;
+  for (const p of availableExpressions) {
+    em.setValue(p.name, p.name === manualExpression ? 1 : 0);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // UI ヘルパ
 // ---------------------------------------------------------------------------
 function showLoading(text) {
@@ -586,6 +662,17 @@ animList.addEventListener("click", (e) => {
   const item = e.target.closest(".anim-item");
   if (!item) return;
   playAnimation(Number(item.dataset.index));
+});
+
+// 表情関連
+toggleExprBtn.addEventListener("click", () =>
+  exprPanel.classList.toggle("hidden")
+);
+closeExprBtn.addEventListener("click", () => exprPanel.classList.add("hidden"));
+exprList.addEventListener("click", (e) => {
+  const chip = e.target.closest(".expr-chip");
+  if (!chip) return;
+  setExpression(chip.dataset.expr);
 });
 
 // ドラッグ & ドロップ（ページ全体で受け付ける）

@@ -265,6 +265,58 @@ html, body {
   color: var(--text-dim);
 }
 
+/* 表情パネル */
+.expr-panel {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 60px);
+  left: 0;
+  margin: 12px;
+  width: 240px;
+  max-width: calc(100vw - 24px);
+  max-height: 55vh;
+  background: var(--panel-bg);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.expr-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px;
+  overflow-y: auto;
+}
+.expr-chip {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--text);
+  padding: 9px 16px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.expr-chip:hover { background: rgba(255, 255, 255, 0.16); }
+.expr-chip.active {
+  background: rgba(79, 140, 255, 0.22);
+  border-color: var(--accent);
+}
+.expr-empty {
+  padding: 8px 4px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+/* 狭い画面ではツールバーが2段に折り返すため、表情パネルを下げて重なりを防ぐ */
+@media (max-width: 640px) {
+  .expr-panel {
+    top: calc(env(safe-area-inset-top, 0px) + 116px);
+  }
+}
+
 /* エラートースト */
 .error-toast {
   position: fixed;

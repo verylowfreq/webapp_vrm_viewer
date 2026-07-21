@@ -42,6 +42,7 @@
     <button id="loadAnotherBtn" class="btn btn-small">別のファイル</button>
     <button id="resetViewBtn" class="btn btn-small">視点リセット</button>
     <button id="toggleAnimBtn" class="btn btn-small">アニメーション</button>
+    <button id="toggleExprBtn" class="btn btn-small">表情</button>
     <button id="toggleInfoBtn" class="btn btn-small">情報</button>
   </div>
 
@@ -68,6 +69,15 @@
     </div>
     <div id="animList" class="anim-list"></div>
     <p class="anim-hint">VRMAファイルをドラッグ&ドロップしても追加できます</p>
+  </div>
+
+  <!-- 表情パネル -->
+  <div id="exprPanel" class="expr-panel hidden">
+    <div class="info-header">
+      <span>表情</span>
+      <button id="closeExprBtn" class="info-close" aria-label="閉じる">×</button>
+    </div>
+    <div id="exprList" class="expr-list"></div>
   </div>
 
   <div id="errorToast" class="error-toast hidden"></div>
