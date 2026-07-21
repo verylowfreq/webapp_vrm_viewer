@@ -1,0 +1,5 @@
+{
+  "animations": [
+    { "name": "テストモーション", "file": "test.vrma", "credit": "pixiv/three-vrm (MIT License)" }
+  ]
+}

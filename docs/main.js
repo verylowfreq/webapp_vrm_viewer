@@ -2,6 +2,11 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
+import {
+  VRMAnimationLoaderPlugin,
+  createVRMAnimationClip,
+  VRMLookAtQuaternionProxy,
+} from "@pixiv/three-vrm-animation";
 
 // ---------------------------------------------------------------------------
 // DOM 参照
@@ -20,6 +25,14 @@ const infoPanel = document.getElementById("infoPanel");
 const infoBody = document.getElementById("infoBody");
 const closeInfoBtn = document.getElementById("closeInfoBtn");
 const errorToast = document.getElementById("errorToast");
+const toggleAnimBtn = document.getElementById("toggleAnimBtn");
+const animPanel = document.getElementById("animPanel");
+const closeAnimBtn = document.getElementById("closeAnimBtn");
+const animList = document.getElementById("animList");
+const playPauseBtn = document.getElementById("playPauseBtn");
+const stopAnimBtn = document.getElementById("stopAnimBtn");
+const addVrmaBtn = document.getElementById("addVrmaBtn");
+const vrmaInput = document.getElementById("vrmaInput");
 
 // ---------------------------------------------------------------------------
 // three.js セットアップ
@@ -58,6 +71,13 @@ scene.add(grid);
 // 現在表示中の VRM
 let currentVrm = null;
 
+// アニメーション状態
+let mixer = null; // 現在の VRM 用 AnimationMixer
+let currentAction = null; // 再生中の AnimationAction
+let currentAnimIndex = -1; // animations 配列内で選択中のインデックス
+// 読み込み済み VRMA。{ name, source: "builtin"|"user", vrmAnimation }
+const animations = [];
+
 // ---------------------------------------------------------------------------
 // リサイズ対応
 // ---------------------------------------------------------------------------
@@ -79,6 +99,7 @@ function animate() {
   requestAnimationFrame(animate);
   const delta = clock.getDelta();
   controls.update();
+  if (mixer) mixer.update(delta);
   if (currentVrm) currentVrm.update(delta);
   renderer.render(scene, camera);
 }
@@ -90,8 +111,14 @@ animate();
 const loader = new GLTFLoader();
 loader.register((parser) => new VRMLoaderPlugin(parser));
 
+// VRMA 用ローダー
+const vrmaLoader = new GLTFLoader();
+vrmaLoader.register((parser) => new VRMAnimationLoaderPlugin(parser));
+
 function disposeCurrentVrm() {
   if (!currentVrm) return;
+  stopAnimation();
+  mixer = null;
   scene.remove(currentVrm.scene);
   VRMUtils.deepDispose(currentVrm.scene);
   currentVrm = null;
@@ -121,11 +148,25 @@ async function loadVrmFromArrayBuffer(buffer, fileSize) {
       obj.frustumCulled = false;
     });
 
+    // VRMA の視線アニメーションを反映させるためのプロキシ
+    if (vrm.lookAt) {
+      const proxy = new VRMLookAtQuaternionProxy(vrm.lookAt);
+      proxy.name = "VRMLookAtQuaternionProxy";
+      vrm.scene.add(proxy);
+    }
+
     currentVrm = vrm;
     scene.add(vrm.scene);
 
+    // このモデル用の AnimationMixer を用意（clip はモデル依存のため作り直す）
+    mixer = new THREE.AnimationMixer(vrm.scene);
+    currentAction = null;
+    currentAnimIndex = -1;
+
     frameModel(vrm.scene);
     showInfo(collectModelInfo(vrm, gltf, fileSize));
+    renderAnimList();
+    updateAnimControls();
 
     dropzone.classList.add("hidden");
     toolbar.classList.remove("hidden");
@@ -143,8 +184,13 @@ async function loadVrmFromArrayBuffer(buffer, fileSize) {
   }
 }
 
+// 拡張子でモデル(.vrm/.glb)とアニメーション(.vrma)を振り分ける
 function loadFile(file) {
   if (!file) return;
+  if (/\.vrma$/i.test(file.name)) {
+    loadVrmaFile(file);
+    return;
+  }
   showLoading("ファイルを読み込み中...");
   const reader = new FileReader();
   reader.onload = () => loadVrmFromArrayBuffer(reader.result, file.size);
@@ -153,6 +199,116 @@ function loadFile(file) {
     showError("ファイルの読み込みに失敗しました");
   };
   reader.readAsArrayBuffer(file);
+}
+
+// ---------------------------------------------------------------------------
+// VRMA（アニメーション）
+// ---------------------------------------------------------------------------
+// ArrayBuffer から VRMAnimation を取り出す
+async function parseVrmAnimation(buffer) {
+  const gltf = await vrmaLoader.parseAsync(buffer, "");
+  const vrmAnimations = gltf.userData.vrmAnimations;
+  if (!vrmAnimations || vrmAnimations.length === 0) {
+    throw new Error("VRMAデータが見つかりませんでした");
+  }
+  return vrmAnimations[0];
+}
+
+// ユーザーが選択/ドロップした .vrma を読み込んでリストに追加し、即再生する
+function loadVrmaFile(file) {
+  showLoading("アニメーションを読み込み中...");
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try {
+      const vrmAnimation = await parseVrmAnimation(reader.result);
+      const name = file.name.replace(/\.vrma$/i, "");
+      animations.push({ name, source: "user", vrmAnimation });
+      renderAnimList();
+      animPanel.classList.remove("hidden");
+      if (currentVrm) {
+        playAnimation(animations.length - 1);
+      } else {
+        showError("アニメーションを追加しました（VRMを読み込むと再生できます）");
+      }
+    } catch (err) {
+      console.error(err);
+      showError(err.message || "VRMAの読み込みに失敗しました");
+    } finally {
+      hideLoading();
+    }
+  };
+  reader.onerror = () => {
+    hideLoading();
+    showError("ファイルの読み込みに失敗しました");
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+// マニフェスト(animations.json)から内蔵アニメを読み込む
+async function loadBuiltinAnimations() {
+  try {
+    const res = await fetch("./animations/animations.json");
+    if (!res.ok) return;
+    const manifest = await res.json();
+    for (const entry of manifest.animations || []) {
+      try {
+        const buf = await (await fetch(`./animations/${entry.file}`)).arrayBuffer();
+        const vrmAnimation = await parseVrmAnimation(buf);
+        animations.push({
+          name: entry.name || entry.file,
+          source: "builtin",
+          vrmAnimation,
+        });
+      } catch (err) {
+        console.warn(`アニメーションの読み込みに失敗: ${entry.file}`, err);
+      }
+    }
+    renderAnimList();
+  } catch (err) {
+    console.warn("animations.json の読み込みに失敗", err);
+  }
+}
+
+// 指定インデックスのアニメーションを再生する
+function playAnimation(index) {
+  const entry = animations[index];
+  if (!entry) return;
+  if (!currentVrm || !mixer) {
+    showError("先にVRMモデルを読み込んでください");
+    return;
+  }
+  const clip = createVRMAnimationClip(entry.vrmAnimation, currentVrm);
+  if (currentAction) currentAction.stop();
+  currentAction = mixer.clipAction(clip);
+  currentAction.reset();
+  currentAction.setLoop(THREE.LoopRepeat, Infinity);
+  currentAction.play();
+  currentAnimIndex = index;
+  renderAnimList();
+  updateAnimControls();
+}
+
+// 再生 / 一時停止のトグル
+function togglePause() {
+  if (!currentAction) return;
+  currentAction.paused = !currentAction.paused;
+  updateAnimControls();
+}
+
+// 停止して初期姿勢へ戻す
+function stopAnimation() {
+  if (currentAction) {
+    currentAction.stop();
+    currentAction = null;
+  }
+  currentAnimIndex = -1;
+  if (currentVrm) {
+    currentVrm.humanoid?.resetNormalizedPose?.();
+    currentVrm.expressionManager?.resetValues?.();
+    currentVrm.update(0);
+  }
+  renderAnimList();
+  updateAnimControls();
 }
 
 // ---------------------------------------------------------------------------
@@ -341,6 +497,37 @@ function escapeHtml(str) {
 }
 
 // ---------------------------------------------------------------------------
+// アニメーションパネルの描画
+// ---------------------------------------------------------------------------
+function renderAnimList() {
+  if (animations.length === 0) {
+    animList.innerHTML =
+      '<div class="anim-empty">アニメーションがありません。<br>.vrmaファイルを追加してください。</div>';
+    return;
+  }
+  animList.innerHTML = animations
+    .map((a, i) => {
+      const active = i === currentAnimIndex ? " active" : "";
+      const badge = a.source === "builtin" ? "内蔵" : "追加";
+      return `<button class="anim-item${active}" data-index="${i}">
+        <span class="anim-name">${escapeHtml(a.name)}</span>
+        <span class="anim-badge">${badge}</span>
+      </button>`;
+    })
+    .join("");
+}
+
+// 再生/一時停止/停止ボタンの有効状態とラベルを更新する
+function updateAnimControls() {
+  const hasModel = !!currentVrm;
+  const isPlaying = !!currentAction;
+  playPauseBtn.disabled = !hasModel || currentAnimIndex < 0;
+  stopAnimBtn.disabled = !isPlaying;
+  const paused = currentAction ? currentAction.paused : true;
+  playPauseBtn.textContent = isPlaying && !paused ? "⏸ 一時停止" : "▶ 再生";
+}
+
+// ---------------------------------------------------------------------------
 // UI ヘルパ
 // ---------------------------------------------------------------------------
 function showLoading(text) {
@@ -376,6 +563,31 @@ toggleInfoBtn.addEventListener("click", () =>
 );
 closeInfoBtn.addEventListener("click", () => infoPanel.classList.add("hidden"));
 
+// アニメーション関連
+toggleAnimBtn.addEventListener("click", () =>
+  animPanel.classList.toggle("hidden")
+);
+closeAnimBtn.addEventListener("click", () => animPanel.classList.add("hidden"));
+playPauseBtn.addEventListener("click", () => {
+  if (currentAction) {
+    togglePause();
+  } else if (currentAnimIndex >= 0) {
+    playAnimation(currentAnimIndex);
+  }
+});
+stopAnimBtn.addEventListener("click", stopAnimation);
+addVrmaBtn.addEventListener("click", () => vrmaInput.click());
+vrmaInput.addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (file) loadVrmaFile(file);
+  vrmaInput.value = "";
+});
+animList.addEventListener("click", (e) => {
+  const item = e.target.closest(".anim-item");
+  if (!item) return;
+  playAnimation(Number(item.dataset.index));
+});
+
 // ドラッグ & ドロップ（ページ全体で受け付ける）
 ["dragenter", "dragover"].forEach((evt) => {
   window.addEventListener(evt, (e) => {
@@ -400,7 +612,12 @@ window.addEventListener("drop", (e) => {
   const file = e.dataTransfer?.files?.[0];
   if (file) {
     loadFile(file);
-  } else if (currentVrm) {
+  }
+  // モデル表示中はドロップ後にオーバーレイを隠す
+  if (currentVrm) {
     dropzone.classList.add("hidden");
   }
 });
+
+// 起動時に内蔵アニメーションを読み込む
+loadBuiltinAnimations();

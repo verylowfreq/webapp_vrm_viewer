@@ -11,7 +11,8 @@
     "imports": {
       "three": "./vendor/three/three.module.js",
       "three/addons/": "./vendor/three/addons/",
-      "@pixiv/three-vrm": "./vendor/three/three-vrm.module.js"
+      "@pixiv/three-vrm": "./vendor/three/three-vrm.module.js",
+      "@pixiv/three-vrm-animation": "./vendor/three/three-vrm-animation.module.js"
     }
   }
   </script>
@@ -40,6 +41,7 @@
   <div id="toolbar" class="toolbar hidden">
     <button id="loadAnotherBtn" class="btn btn-small">別のファイル</button>
     <button id="resetViewBtn" class="btn btn-small">視点リセット</button>
+    <button id="toggleAnimBtn" class="btn btn-small">アニメーション</button>
     <button id="toggleInfoBtn" class="btn btn-small">情報</button>
   </div>
 
@@ -50,6 +52,22 @@
       <button id="closeInfoBtn" class="info-close" aria-label="閉じる">×</button>
     </div>
     <div id="infoBody" class="info-body"></div>
+  </div>
+
+  <!-- アニメーションパネル -->
+  <div id="animPanel" class="anim-panel hidden">
+    <div class="info-header">
+      <span>アニメーション</span>
+      <button id="closeAnimBtn" class="info-close" aria-label="閉じる">×</button>
+    </div>
+    <div class="anim-controls">
+      <button id="playPauseBtn" class="btn btn-small" disabled>▶ 再生</button>
+      <button id="stopAnimBtn" class="btn btn-small" disabled>■ 停止</button>
+      <button id="addVrmaBtn" class="btn btn-small">VRMAを追加</button>
+      <input id="vrmaInput" type="file" accept=".vrma" hidden />
+    </div>
+    <div id="animList" class="anim-list"></div>
+    <p class="anim-hint">VRMAファイルをドラッグ&ドロップしても追加できます</p>
   </div>
 
   <div id="errorToast" class="error-toast hidden"></div>
