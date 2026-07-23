@@ -59,6 +59,11 @@ html, body {
   backdrop-filter: blur(8px);
 }
 .btn-small:hover { background: rgba(255, 255, 255, 0.18); }
+.btn-small.active {
+  background: var(--accent);
+  color: #fff;
+}
+.btn-small.active:hover { background: var(--accent-hover); }
 
 /* ドロップゾーン */
 .dropzone {

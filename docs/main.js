@@ -37,6 +37,7 @@ const toggleExprBtn = document.getElementById("toggleExprBtn");
 const exprPanel = document.getElementById("exprPanel");
 const closeExprBtn = document.getElementById("closeExprBtn");
 const exprList = document.getElementById("exprList");
+const shakeSensorBtn = document.getElementById("shakeSensorBtn");
 
 // ---------------------------------------------------------------------------
 // three.js セットアップ
@@ -95,6 +96,18 @@ const EXPRESSION_PRESETS = [
 // 現在のモデルが持つプリセットのみ（buildExpressionList で更新）
 let availableExpressions = [];
 
+// 加速度センサー（揺れ物を揺らす）
+let sensorEnabled = false;
+const shakeAccel = new THREE.Vector3(); // 現在注入中の加速度（ワールド）
+const gravityLowPass = new THREE.Vector3(); // 重力成分のローパス（ハイパス用）
+let gravityLowPassInit = false;
+// 各 joint の base 重力。Map<joint, { dir: Vector3, power: number }>
+let springBaseGravity = null;
+const SHAKE_GAIN = 0.08; // 加速度→外力ゲイン
+const SHAKE_DECAY = 0.8; // 毎フレーム減衰
+const SHAKE_CLAMP = 30; // 各軸クランプ(m/s^2)
+const _shakeForce = new THREE.Vector3(); // 作業用
+
 // ---------------------------------------------------------------------------
 // リサイズ対応
 // ---------------------------------------------------------------------------
@@ -120,8 +133,12 @@ function animate() {
   if (currentVrm) {
     // 手動表情はアニメーションより後・描画反映(update)より前に適用して優先させる
     applyManualExpression();
+    // 加速度センサーの揺れを spring bone の外力として注入（update 前）
+    applyShakeToSpringBones();
     currentVrm.update(delta);
   }
+  // 揺れは毎フレーム減衰させ、静止すれば自然に収まる
+  if (sensorEnabled) shakeAccel.multiplyScalar(SHAKE_DECAY);
   renderer.render(scene, camera);
 }
 animate();
@@ -139,6 +156,8 @@ vrmaLoader.register((parser) => new VRMAnimationLoaderPlugin(parser));
 function disposeCurrentVrm() {
   if (!currentVrm) return;
   stopAnimation();
+  // 旧モデルの joint 参照を握ったままにしない
+  springBaseGravity = null;
   mixer = null;
   scene.remove(currentVrm.scene);
   VRMUtils.deepDispose(currentVrm.scene);
@@ -189,6 +208,15 @@ async function loadVrmFromArrayBuffer(buffer, fileSize) {
     renderAnimList();
     updateAnimControls();
     buildExpressionList();
+    // センサー有効中にモデルが変わったら、新モデルの揺れ物で取り直す
+    if (sensorEnabled) {
+      if (getSpringJoints().length === 0) {
+        disableShakeSensor();
+      } else {
+        snapshotSpringBase();
+      }
+    }
+    updateShakeButton();
 
     dropzone.classList.add("hidden");
     toolbar.classList.remove("hidden");
@@ -604,6 +632,144 @@ function applyManualExpression() {
 }
 
 // ---------------------------------------------------------------------------
+// 加速度センサーで揺れ物（spring bone）を揺らす
+// ---------------------------------------------------------------------------
+function getSpringJoints() {
+  const joints = currentVrm && currentVrm.springBoneManager?.joints;
+  if (!joints) return [];
+  return Array.from(joints); // Set/配列どちらでもよいよう配列化
+}
+
+// 各 joint の base 重力（向き・強さ）を控える
+function snapshotSpringBase() {
+  springBaseGravity = new Map();
+  for (const joint of getSpringJoints()) {
+    const s = joint.settings;
+    springBaseGravity.set(joint, {
+      dir: s.gravityDir.clone(),
+      power: s.gravityPower,
+    });
+  }
+}
+
+// base 重力へ戻す
+function restoreSpringBase() {
+  if (!springBaseGravity) return;
+  for (const [joint, base] of springBaseGravity) {
+    joint.settings.gravityDir.copy(base.dir);
+    joint.settings.gravityPower = base.power;
+  }
+}
+
+// 揺れ（shakeAccel）を各 joint の外力として注入する
+function applyShakeToSpringBones() {
+  if (!sensorEnabled || !springBaseGravity) return;
+  for (const [joint, base] of springBaseGravity) {
+    // F = baseDir*basePower + shakeAccel*gain
+    _shakeForce
+      .copy(base.dir)
+      .multiplyScalar(base.power)
+      .addScaledVector(shakeAccel, SHAKE_GAIN);
+    const len = _shakeForce.length();
+    if (len > 1e-6) {
+      joint.settings.gravityDir.copy(_shakeForce).multiplyScalar(1 / len);
+      joint.settings.gravityPower = len;
+    } else {
+      // ほぼ0：向きは base のまま強さ0
+      joint.settings.gravityDir.copy(base.dir);
+      joint.settings.gravityPower = 0;
+    }
+  }
+}
+
+// DeviceMotion から揺れ加速度を取得する
+function onDeviceMotion(e) {
+  let ax, ay, az;
+  const acc = e.acceleration;
+  if (acc && (acc.x != null || acc.y != null || acc.z != null)) {
+    // 重力を含まない加速度が取れる端末
+    ax = acc.x || 0;
+    ay = acc.y || 0;
+    az = acc.z || 0;
+  } else if (e.accelerationIncludingGravity) {
+    // 重力込みしか無い端末：ローパスで重力を推定して差し引く（ハイパス）
+    const g = e.accelerationIncludingGravity;
+    const gx = g.x || 0,
+      gy = g.y || 0,
+      gz = g.z || 0;
+    if (!gravityLowPassInit) {
+      gravityLowPass.set(gx, gy, gz);
+      gravityLowPassInit = true;
+    } else {
+      gravityLowPass.lerp(_shakeForce.set(gx, gy, gz), 0.1);
+    }
+    ax = gx - gravityLowPass.x;
+    ay = gy - gravityLowPass.y;
+    az = gz - gravityLowPass.z;
+  } else {
+    return;
+  }
+  // クランプしてワールド座標へ（デバイス軸をそのまま対応付け）
+  const clamp = (v) => Math.max(-SHAKE_CLAMP, Math.min(SHAKE_CLAMP, v));
+  shakeAccel.set(clamp(ax), clamp(ay), clamp(az));
+}
+
+async function enableShakeSensor() {
+  const joints = getSpringJoints();
+  if (joints.length === 0) {
+    showError("このモデルには揺れ物（spring bone）がありません");
+    return;
+  }
+  // iOS 13+ は明示的な許可が必要（ユーザー操作起点で呼ぶ）
+  try {
+    const DME = window.DeviceMotionEvent;
+    if (DME && typeof DME.requestPermission === "function") {
+      const res = await DME.requestPermission();
+      if (res !== "granted") {
+        showError("センサーの使用が許可されませんでした");
+        return;
+      }
+    }
+  } catch (err) {
+    console.error(err);
+    showError("センサーを利用できませんでした");
+    return;
+  }
+  snapshotSpringBase();
+  gravityLowPassInit = false;
+  shakeAccel.set(0, 0, 0);
+  window.addEventListener("devicemotion", onDeviceMotion);
+  sensorEnabled = true;
+  updateShakeButton();
+}
+
+function disableShakeSensor() {
+  window.removeEventListener("devicemotion", onDeviceMotion);
+  sensorEnabled = false;
+  shakeAccel.set(0, 0, 0);
+  restoreSpringBase();
+  springBaseGravity = null;
+  updateShakeButton();
+}
+
+function toggleShakeSensor() {
+  if (sensorEnabled) disableShakeSensor();
+  else enableShakeSensor();
+}
+
+// ボタンの表示・状態を更新する
+function updateShakeButton() {
+  // DeviceMotion 非対応環境では出さない
+  if (!("DeviceMotionEvent" in window)) {
+    shakeSensorBtn.classList.add("hidden");
+    return;
+  }
+  shakeSensorBtn.classList.remove("hidden");
+  shakeSensorBtn.classList.toggle("active", sensorEnabled);
+  shakeSensorBtn.textContent = sensorEnabled ? "センサー ON" : "揺れ物センサー";
+}
+
+// ---------------------------------------------------------------------------
 // UI ヘルパ
 // ---------------------------------------------------------------------------
 function showLoading(text) {
@@ -674,6 +840,9 @@ exprList.addEventListener("click", (e) => {
   if (!chip) return;
   setExpression(chip.dataset.expr);
 });
+
+// 加速度センサー（揺れ物）
+shakeSensorBtn.addEventListener("click", toggleShakeSensor);
 
 // ドラッグ & ドロップ（ページ全体で受け付ける）
 ["dragenter", "dragover"].forEach((evt) => {
